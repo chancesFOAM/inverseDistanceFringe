@@ -183,6 +183,26 @@ protected:
             labelList& allCellTypes
         ) const;
 
+        //- Mark all cells overlapping (a voxel covered by) a src patch
+        //  with type INTERPOLATED
+        void markPatchesAsInterpolated
+        (
+            PstreamBuffers& pBufs,
+
+            // Mesh bb and data
+            const PtrList<fvMeshSubset>& meshParts,
+
+            // Helper mesh for patches
+            const List<treeBoundBoxList>& patchBb,
+            const List<labelVector>& patchDivisions,
+            const PtrList<PackedList<2>>& patchParts,
+
+            const label srcI,
+            const label tgtI,
+            labelList& allCellTypes,
+            DynamicList<label>& interpolatedCells
+        ) const;
+
         //- If multiple donors meshes: decide which is best
         bool betterDonor
         (
@@ -249,8 +269,10 @@ protected:
         (
             const scalar layerRelax,
             const labelListList& allStencil,
+            const int nPushBack,
             labelList& allCellTypes,
-            scalarField& allWeight
+            scalarField& allWeight,
+            DynamicList<label>& interpolatedCells
         ) const;
 
         //- Create stencil starting from the donor containing the acceptor

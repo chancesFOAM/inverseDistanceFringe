@@ -300,7 +300,7 @@ bool Foam::cellCellStencils::inverseDistanceFringe::overlaps
             for (label k = minIds[2]; k <= maxIds[2]; k++)
             {
                 label i1 = index(nDivs, labelVector(i, j, k));
-                if (vals[i1] == patchCellType::PATCH)
+                if (vals[i1] == val)
                 {
                     return true;
                 }
@@ -436,6 +436,133 @@ void Foam::cellCellStencils::inverseDistanceFringe::markPatchesAsHoles
     }
 }
 
+void Foam::cellCellStencils::inverseDistanceFringe::markPatchesAsInterpolated
+(
+    PstreamBuffers& pBufs,
+
+    const PtrList<fvMeshSubset>& meshParts,
+
+    const List<treeBoundBoxList>& patchBb,
+    const List<labelVector>& patchDivisions,
+    const PtrList<PackedList<2>>& patchParts,
+
+    const label srcI,
+    const label tgtI,
+    labelList& allCellTypes,
+    DynamicList<label>& interpolatedCells
+) const
+{
+    const treeBoundBoxList& srcPatchBbs = patchBb[srcI];
+    const treeBoundBoxList& tgtPatchBbs = patchBb[tgtI];
+    const labelList& tgtCellMap = meshParts[tgtI].cellMap();
+
+    // 1. do processor-local src-tgt patch overlap
+    {
+        const treeBoundBox& srcPatchBb = srcPatchBbs[Pstream::myProcNo()];
+        const treeBoundBox& tgtPatchBb = tgtPatchBbs[Pstream::myProcNo()];
+
+        if (srcPatchBb.overlaps(tgtPatchBb))
+        {
+            const PackedList<2>& srcPatchTypes = patchParts[srcI];
+            const labelVector& zoneDivs = patchDivisions[srcI];
+
+            forAll(tgtCellMap, tgtCelli)
+            {
+                label celli = tgtCellMap[tgtCelli];
+                treeBoundBox cBb(cellBb(mesh_, celli));
+                cBb.min() -= smallVec_;
+                cBb.max() += smallVec_;
+
+                if
+                (
+                    overlaps
+                    (
+                        srcPatchBb,
+                        zoneDivs,
+                        srcPatchTypes,
+                        cBb,
+                        patchCellType::OVERSET
+                    )
+                )
+                {
+                    allCellTypes[celli] = INTERPOLATED;
+                    interpolatedCells.append(celli);
+                }
+            }
+        }
+    }
+
+
+    // 2. Send over srcMesh bits that overlap tgt and do calculation
+    pBufs.clear();
+    for (label procI = 0; procI < Pstream::nProcs(); procI++)
+    {
+        if (procI != Pstream::myProcNo())
+        {
+            const treeBoundBox& srcPatchBb = srcPatchBbs[Pstream::myProcNo()];
+            const treeBoundBox& tgtPatchBb = tgtPatchBbs[procI];
+
+            if (srcPatchBb.overlaps(tgtPatchBb))
+            {
+                // Send over complete patch voxel map. Tbd: could
+                // subset
+                UOPstream os(procI, pBufs);
+                os << srcPatchBb << patchDivisions[srcI] << patchParts[srcI];
+            }
+        }
+    }
+    pBufs.finishedSends();
+    for (label procI = 0; procI < Pstream::nProcs(); procI++)
+    {
+        if (procI != Pstream::myProcNo())
+        {
+            //const treeBoundBox& srcBb = srcBbs[procI];
+            const treeBoundBox& srcPatchBb = srcPatchBbs[procI];
+            const treeBoundBox& tgtPatchBb = tgtPatchBbs[Pstream::myProcNo()];
+
+            if (srcPatchBb.overlaps(tgtPatchBb))
+            {
+                UIPstream is(procI, pBufs);
+                {
+                    treeBoundBox receivedBb(is);
+                    if (srcPatchBb != receivedBb)
+                    {
+                        FatalErrorInFunction
+                            << "proc:" << procI
+                            << " srcPatchBb:" << srcPatchBb
+                            << " receivedBb:" << receivedBb
+                            << exit(FatalError);
+                    }
+                }
+                const labelVector zoneDivs(is);
+                const PackedList<2> srcPatchTypes(is);
+
+                forAll(tgtCellMap, tgtCelli)
+                {
+                    label celli = tgtCellMap[tgtCelli];
+                    treeBoundBox cBb(cellBb(mesh_, celli));
+                    cBb.min() -= smallVec_;
+                    cBb.max() += smallVec_;
+                    if
+                    (
+                        overlaps
+                        (
+                            srcPatchBb,
+                            zoneDivs,
+                            srcPatchTypes,
+                            cBb,
+                            patchCellType::OVERSET
+                        )
+                    )
+                    {
+                        allCellTypes[celli] = INTERPOLATED;
+                        interpolatedCells.append(celli);
+                    }
+                }
+            }
+        }
+    }
+}
 
 bool Foam::cellCellStencils::inverseDistanceFringe::betterDonor
 (
@@ -965,36 +1092,16 @@ void Foam::cellCellStencils::inverseDistanceFringe::walkFront
 (
     const scalar layerRelax,
     const labelListList& allStencil,
+    const int nPushBack,
     labelList& allCellTypes,
-    scalarField& allWeight
+    scalarField& allWeight,
+    DynamicList<label>& interpolatedCells
 ) const
 {
     // Current front
     bitSet isFront(mesh_.nFaces());
 
     const fvBoundaryMesh& fvm = mesh_.boundary();
-
-
-    // 'overset' patches
-
-    forAll(fvm, patchI)
-    {
-        if (isA<oversetFvPatch>(fvm[patchI]))
-        {
-            const labelList& fc = fvm[patchI].faceCells();
-            forAll(fc, i)
-            {
-                label cellI = fc[i];
-                if (allCellTypes[cellI] == INTERPOLATED)
-                {
-                    // Note that acceptors might have been marked hole if
-                    // there are no donors in which case we do not want to
-                    // walk this out. This is an extreme situation.
-                    isFront.set(fvm[patchI].start()+i);
-                }
-            }
-        }
-    }
 
 
     // Outside of 'hole' region
@@ -1040,6 +1147,439 @@ void Foam::cellCellStencils::inverseDistanceFringe::walkFront
                 //Pout<< "Front at coupled face:" << faceI
                 //    << " at:" << mesh_.faceCentres()[faceI] << endl;
                 isFront.set(faceI);
+            }
+        }
+    }
+    /*int sum1=0;
+    forAll(isFront,faceI)
+    {
+        if(isFront.test(faceI))
+        {
+            sum1++;
+        }
+    }
+    Info<<"isFront = "<<sum1<<endl;*/
+    /*int sumIn2=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn2++;
+        }
+    }
+    Info<<"INTERPOLATED size="<<sumIn2<<endl;
+    sumIn2=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==HOLE)
+        {
+            sumIn2++;
+        }
+    }
+    Info<<"HOLE size="<<sumIn2<<endl;*/
+    while (returnReduce(isFront.any(), orOp<bool>()))
+    {
+        // Interpolate cells on front
+        bitSet newIsFront(mesh_.nFaces());
+        //~ scalarField newFraction(fraction);
+        //int count = 0;
+        forAll(isFront, faceI)
+        {
+            if (isFront.test(faceI))
+            {
+                label own = mesh_.faceOwner()[faceI];
+                if (allCellTypes[own] != HOLE && allCellTypes[own] != INTERPOLATED)
+                {
+                    //~ if (allWeight[own] < fraction[faceI])
+                    //~ {
+                        // Cell wants to become interpolated (if sufficient
+                        // stencil, otherwise becomes hole)
+                        //~ if (allStencil[own].size())
+                        //~ {
+                            //~ allWeight[own] = fraction[faceI];
+                            allCellTypes[own] = HOLE;
+                            newIsFront.set(mesh_.cells()[own]);
+                            //count++;
+                            //Info << "cell detected! own:"<<endl;
+                            // Add faces of cell (with lower weight) as new
+                            // front
+                            //~ seedCell
+                            //~ (
+                                //~ own,
+                                //~ fraction[faceI]-layerRelax,
+                                //~ newIsFront,
+                                //~ newFraction
+                            //~ );
+                        //~ }
+                        //~ else
+                        //~ {
+                            //~ allWeight[own] = 0.0;
+                            //~ allCellTypes[own] = HOLE;
+                            //~ // Add faces of cell as new front
+                            //~ seedCell
+                            //~ (
+                                //~ own,
+                                //~ 1.0,
+                                //~ newIsFront,
+                                //~ newFraction
+                            //~ );
+                        //~ }
+                    //~ }
+                }
+                /*else if (allCellTypes[own] == INTERPOLATED)
+                {
+                    Info << "INTERPOLATED cell detected! own:"<<endl;
+                }*/
+                if (mesh_.isInternalFace(faceI))
+                {
+                    label nei = mesh_.faceNeighbour()[faceI];
+                    if (allCellTypes[nei] != HOLE && allCellTypes[nei] != INTERPOLATED)
+                    {
+                        //~ if (allWeight[nei] < fraction[faceI])
+                        //~ {
+                            //~ if (allStencil[nei].size())
+                            //~ {
+                                //~ allWeight[nei] = fraction[faceI];
+                                allCellTypes[nei] = HOLE;
+                                newIsFront.set(mesh_.cells()[nei]);
+                                //count++;
+                                //Info << "cell detected! nei:"<<endl;
+                                //~ seedCell
+                                //~ (
+                                    //~ nei,
+                                    //~ fraction[faceI]-layerRelax,
+                                    //~ newIsFront,
+                                    //~ newFraction
+                                //~ );
+                            //~ }
+                            //~ else
+                            //~ {
+                                //~ allWeight[nei] = 0.0;
+                                //~ allCellTypes[nei] = HOLE;
+                                //~ seedCell
+                                //~ (
+                                    //~ nei,
+                                    //~ 1.0,
+                                    //~ newIsFront,
+                                    //~ newFraction
+                                //~ );
+                            //~ }
+                        //~ }
+                    }
+                    /*else if (allCellTypes[nei] == INTERPOLATED)
+                    {
+                        Info << "interpolated cell detected! nei:"<<endl;
+                    }*/
+                }
+            }
+        }
+        syncTools::syncFaceList(mesh_, newIsFront, orEqOp<unsigned int>());
+        //~ syncTools::syncFaceList(mesh_, newFraction, maxEqOp<scalar>());
+
+        isFront.transfer(newIsFront);
+        //~ fraction.transfer(newFraction);
+
+    }
+    /*sum1=0;
+    forAll(isFront,faceI)
+    {
+        if(isFront.test(faceI))
+        {
+            sum1++;
+        }
+    }
+    Info<<"isFront = "<<sum1<<endl;*/
+    //Info<<"isFront.any()="<<isFront.any()<<endl;
+    //Info<<"isFront.size()="<<isFront.size()<<endl;
+    /*int sumIn=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn++;
+        }
+    }
+    Info<<"INTERPOLATED size="<<sumIn<<endl;
+    sumIn=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==HOLE)
+        {
+            sumIn++;
+        }
+    }
+    Info<<"HOLE size="<<sumIn<<endl;
+    Info<<"interpolated size="<<interpolatedCells.size()<<endl;*/
+    forAll(interpolatedCells,celli)
+    {
+        allCellTypes[interpolatedCells[celli]]=CALCULATED;
+    }
+    /*Info<<"interpolated size="<<interpolatedCells.size()<<endl;*/
+    // 'overset' patches
+    /*int sumIn3=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn3++;
+        }
+    }
+    Info<<"INTERPOLATED size="<<sumIn3<<endl;
+    sumIn3=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==HOLE)
+        {
+            sumIn3++;
+        }
+    }
+    Info<<"HOLE size="<<sumIn3<<endl;*/
+    // Outside of 'hole' region
+    {
+        const labelList& own = mesh_.faceOwner();
+        const labelList& nei = mesh_.faceNeighbour();
+
+        for (label faceI = 0; faceI < mesh_.nInternalFaces(); faceI++)
+        {
+            label ownType = allCellTypes[own[faceI]];
+            label neiType = allCellTypes[nei[faceI]];
+            if
+            (
+                 (ownType == HOLE && neiType != HOLE)
+              || (ownType != HOLE && neiType == HOLE)
+            )
+            {
+                //Pout<< "Front at face:" << faceI
+                //    << " at:" << mesh_.faceCentres()[faceI] << endl;
+                isFront.set(faceI);
+            }
+        }
+
+        labelList nbrCellTypes;
+        syncTools::swapBoundaryCellList(mesh_, allCellTypes, nbrCellTypes);
+
+        for
+        (
+            label faceI = mesh_.nInternalFaces();
+            faceI < mesh_.nFaces();
+            faceI++
+        )
+        {
+            label ownType = allCellTypes[own[faceI]];
+            label neiType = nbrCellTypes[faceI-mesh_.nInternalFaces()];
+
+            if
+            (
+                 (ownType == HOLE && neiType != HOLE)
+              || (ownType != HOLE && neiType == HOLE)
+            )
+            {
+                //Pout<< "Front at coupled face:" << faceI
+                //    << " at:" << mesh_.faceCentres()[faceI] << endl;
+                isFront.set(faceI);
+            }
+        }
+    }
+    /*int sumIn3=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==HOLE)
+        {
+            sumIn3++;
+        }
+    }
+    Info<<"HOLE size="<<sumIn3<<endl;*/
+    //Info<<"nPushBack="<<nPushBack<<endl;
+    int iPushBack = nPushBack;
+    while (iPushBack > 0)
+    {
+        //Info<<"into circle"<<endl;
+        // Interpolate cells on front
+        bitSet newIsFront(mesh_.nFaces());
+        //~ scalarField newFraction(fraction);
+        forAll(isFront, faceI)
+        {
+            //Info<<"isFront.test(faceI)="<<isFront.test(faceI)<<endl;
+            if (isFront.test(faceI))
+            {
+                label own = mesh_.faceOwner()[faceI];
+                //Info<<"mesh_cells()[own]="<<mesh_.cells()[own]<<endl;
+                if (allCellTypes[own] == HOLE)
+                {
+                    //Info<<"find HOLE!"<<endl;
+                    //~ if (allWeight[own] < fraction[faceI])
+                    //~ {
+                        // Cell wants to become interpolated (if sufficient
+                        // stencil, otherwise becomes hole)
+                        //~ if (allStencil[own].size())
+                        //~ {
+                            //~ allWeight[own] = fraction[faceI];
+                            allCellTypes[own] = CALCULATED;
+                            newIsFront.set(mesh_.cells()[own]);
+                            //Info<<"mesh_cells()[own]="<<mesh_.cells()[own]<<endl;
+                            // Add faces of cell (with lower weight) as new
+                            // front
+                            //~ seedCell
+                            //~ (
+                                //~ own,
+                                //~ fraction[faceI]-layerRelax,
+                                //~ newIsFront,
+                                //~ newFraction
+                            //~ );
+                        //~ }
+                        //~ else
+                        //~ {
+                            //~ allWeight[own] = 0.0;
+                            //~ allCellTypes[own] = HOLE;
+                            //~ // Add faces of cell as new front
+                            //~ seedCell
+                            //~ (
+                                //~ own,
+                                //~ 1.0,
+                                //~ newIsFront,
+                                //~ newFraction
+                            //~ );
+                        //~ }
+                    //~ }
+                }
+                if (mesh_.isInternalFace(faceI))
+                {
+                    label nei = mesh_.faceNeighbour()[faceI];
+                    //Info<<"mesh_cells()[nei]="<<mesh_.cells()[nei]<<endl;
+                    if (allCellTypes[nei] == HOLE)
+                    {
+                        //Info<<"find HOLE!"<<endl;
+                        //~ if (allWeight[nei] < fraction[faceI])
+                        //~ {
+                            //~ if (allStencil[nei].size())
+                            //~ {
+                                //~ allWeight[nei] = fraction[faceI];
+                                allCellTypes[nei] = CALCULATED;
+                                newIsFront.set(mesh_.cells()[nei]);
+                                //Info<<"mesh_cells()[nei]="<<mesh_.cells()[nei]<<endl;
+                                //~ seedCell
+                                //~ (
+                                    //~ nei,
+                                    //~ fraction[faceI]-layerRelax,
+                                    //~ newIsFront,
+                                    //~ newFraction
+                                //~ );
+                            //~ }
+                            //~ else
+                            //~ {
+                                //~ allWeight[nei] = 0.0;
+                                //~ allCellTypes[nei] = HOLE;
+                                //~ seedCell
+                                //~ (
+                                    //~ nei,
+                                    //~ 1.0,
+                                    //~ newIsFront,
+                                    //~ newFraction
+                                //~ );
+                            //~ }
+                        //~ }
+                    }
+                }
+            }
+        }
+
+        syncTools::syncFaceList(mesh_, newIsFront, orEqOp<unsigned int>());
+        //~ syncTools::syncFaceList(mesh_, newFraction, maxEqOp<scalar>());
+
+        isFront.transfer(newIsFront);
+        //~ fraction.transfer(newFraction);
+        iPushBack -= 1;
+    }
+    /*sum1=0;
+    forAll(isFront,faceI)
+    {
+        if(isFront.test(faceI))
+        {
+            sum1++;
+        }
+    }
+    Info<<"isFront = "<<sum1<<endl;*/
+    /*sumIn3=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==HOLE)
+        {
+            sumIn3++;
+        }
+    }
+    Info<<"HOLE size="<<sumIn3<<endl;*/
+    /*bitSet isFront0(mesh_.nFaces());
+    isFront.transfer(isFront0);
+    // Outside of 'hole' region
+    {
+        const labelList& own = mesh_.faceOwner();
+        const labelList& nei = mesh_.faceNeighbour();
+
+        for (label faceI = 0; faceI < mesh_.nInternalFaces(); faceI++)
+        {
+            label ownType = allCellTypes[own[faceI]];
+            label neiType = allCellTypes[nei[faceI]];
+            if
+            (
+                 (ownType == HOLE && neiType != HOLE)
+              || (ownType != HOLE && neiType == HOLE)
+            )
+            {
+                //Pout<< "Front at face:" << faceI
+                //    << " at:" << mesh_.faceCentres()[faceI] << endl;
+                isFront.set(faceI);
+            }
+        }
+
+        labelList nbrCellTypes;
+        syncTools::swapBoundaryCellList(mesh_, allCellTypes, nbrCellTypes);
+
+        for
+        (
+            label faceI = mesh_.nInternalFaces();
+            faceI < mesh_.nFaces();
+            faceI++
+        )
+        {
+            label ownType = allCellTypes[own[faceI]];
+            label neiType = nbrCellTypes[faceI-mesh_.nInternalFaces()];
+
+            if
+            (
+                 (ownType == HOLE && neiType != HOLE)
+              || (ownType != HOLE && neiType == HOLE)
+            )
+            {
+                //Pout<< "Front at coupled face:" << faceI
+                //    << " at:" << mesh_.faceCentres()[faceI] << endl;
+                isFront.set(faceI);
+            }
+        }
+    }*/
+    /*sum1=0;
+    forAll(isFront,faceI)
+    {
+        if(isFront.test(faceI))
+        {
+            sum1++;
+        }
+    }
+    Info<<"isFront = "<<sum1<<endl;*/
+    forAll(fvm, patchI)
+    {
+        if (isA<oversetFvPatch>(fvm[patchI]))
+        {
+            const labelList& fc = fvm[patchI].faceCells();
+            forAll(fc, i)
+            {
+                label cellI = fc[i];
+                if (allCellTypes[cellI] == INTERPOLATED)
+                {
+                    // Note that acceptors might have been marked hole if
+                    // there are no donors in which case we do not want to
+                    // walk this out. This is an extreme situation.
+                    isFront.set(fvm[patchI].start()+i);
+                }
             }
         }
     }
@@ -1461,6 +2001,7 @@ bool Foam::cellCellStencils::inverseDistanceFringe::update()
     scalar layerRelax(dict_.getOrDefault("layerRelax", 1.0));
 
     scalar tol = dict_.getOrDefault("tolerance", 1e-10);
+    int nPushBack = dict_.getOrDefault("nPushBack",2);
     smallVec_ = mesh_.bounds().span()*tol;
 
     const labelIOList& zoneID = this->zoneID();
@@ -1681,7 +2222,62 @@ bool Foam::cellCellStencils::inverseDistanceFringe::update()
             );
         }
     }
+    /*int sumIn=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn++;
+        }
+    }
+    Info<<"INTERPOLATED size="<<sumIn<<endl;*/
+    // Mark fringe (in allCellTypes)
+    DynamicList<label> interpolatedCells;
+    for (label srcI = 0; srcI < meshParts.size()-1; srcI++)
+    {
+        for (label tgtI = srcI+1; tgtI < meshParts.size(); tgtI++)
+        {
+            markPatchesAsInterpolated
+            (
+                pBufs,
 
+                meshParts,
+
+                patchBb,
+                patchDivisions,
+                patchParts,
+
+                srcI,
+                tgtI,
+                allCellTypes,
+                interpolatedCells
+            );
+            markPatchesAsInterpolated
+            (
+                pBufs,
+
+                meshParts,
+
+                patchBb,
+                patchDivisions,
+                patchParts,
+
+                tgtI,
+                srcI,
+                allCellTypes,
+                interpolatedCells
+            );
+        }
+    }
+    /*int sumIn2=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn2++;
+        }
+    }
+    Info<<"INTERPOLATED size="<<sumIn2<<endl;*/
     // Find donors (which are not holes) in allStencil, allDonorID
     for (label srcI = 0; srcI < meshParts.size()-1; srcI++)
     {
@@ -1773,7 +2369,7 @@ bool Foam::cellCellStencils::inverseDistanceFringe::update()
     // If so set the cell either to interpolated (if there are donors) or
     // holes (if there are no donors). Note that any interpolated cell might
     // still be overwritten by the flood filling
-    {
+    /*{
         label nCalculated = 0;
 
         forAll(cellTypes_, celli)
@@ -1800,8 +2396,16 @@ bool Foam::cellCellStencils::inverseDistanceFringe::update()
                 << " to calculated. Changed to interpolated"
                 << endl;
         }
+    }*/
+    /*sumIn2=0;
+    forAll(allCellTypes,celli)
+    {
+        if(allCellTypes[celli]==INTERPOLATED)
+        {
+            sumIn2++;
+        }
     }
-
+    Info<<"INTERPOLATED size="<<sumIn2<<endl;*/
 
     // Mark unreachable bits
     findHoles(globalCells, mesh_, zoneID, allStencil, allCellTypes);
@@ -1831,7 +2435,7 @@ bool Foam::cellCellStencils::inverseDistanceFringe::update()
 
     // Add buffer interpolation layer(s) around holes
     scalarField allWeight(mesh_.nCells(), Zero);
-    walkFront(layerRelax, allStencil, allCellTypes, allWeight);
+    walkFront(layerRelax, allStencil, nPushBack, allCellTypes, allWeight,interpolatedCells);
 
     if (debug)
     {
