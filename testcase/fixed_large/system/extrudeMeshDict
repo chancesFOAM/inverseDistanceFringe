@@ -1,0 +1,42 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2006                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      extrudeMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// What to extrude:
+//      patch   : from patch of another case ('sourceCase')
+//      mesh    : as above but with original case included
+//      surface : from externally read surface
+
+//constructFrom mesh;
+constructFrom patch;
+//constructFrom surface;
+
+// If construct from patch/mesh:
+sourceCase "$FOAM_CASE";
+sourcePatches (front);
+exposedPatchName back;
+
+extrudeModel    plane;
+thickness       0.12;
+// Do front and back need to be merged? Usually only makes sense for 360
+// degree wedges.
+flipNormals true;
+mergeFaces false;
+
+// Merge small edges. Fraction of bounding box.
+//mergeTol 0;
+
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

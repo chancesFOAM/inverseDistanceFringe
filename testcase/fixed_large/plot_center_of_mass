@@ -1,0 +1,16 @@
+set title "Centre of Mass"
+set ylabel 'Centre of Mass'
+set xlabel 'time'
+plot "plotfile" u 1:($4/0.0016)   title 'Centre of Mass (z)' with lines
+pause -1
+
+plot "plotfile" u 1:($2/0.0016)   title 'Centre of Mass (x)' with lines
+pause -1
+
+set title "velocity of centre of Mass"
+set ylabel 'Centre of Mass velocity'
+set xlabel 'time'
+plot  "plotfile" u 1:7   title 'vz' with lines, \
+    "tenCate2002velocityRe1.5.csv" u 1:2 w p pt 7 title 'ten Cane et al 2002 Re 1.5'
+pause -1
+

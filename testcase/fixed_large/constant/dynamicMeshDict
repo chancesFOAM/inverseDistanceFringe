@@ -1,0 +1,97 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v1912                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      dynamicMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+motionSolverLibs (sixDoFRigidBodyMotion);
+
+motionSolver    sixDoFRigidBodyMotion;
+
+
+displacementLaplacianCoeffs
+{
+    diffusivity     uniform 1;
+}
+
+dynamicFvMesh       dynamicOversetFvMesh;
+
+dynamicOversetFvMeshCoeffs
+{
+    layerRelax 0.3;
+}
+
+sixDoFRigidBodyMotionCoeffs
+{
+
+    accelerationRelaxation 1.0;
+    accelerationDamping 1.0;
+
+    patches         (walls);
+    innerDistance   1.0;
+    outerDistance   1.1;
+
+    mass            0.002413;//m*=4m/(pai*L*rho*D^2)=10
+   centreOfMass    (-0 0.0 0.0);
+   momentOfInertia (1.144E-08 1.144E-08 1.144E-08);
+
+   g               (0 0 0);
+   rho             rhoInf;
+   rhoInf          1000;
+   report          on;
+
+   solver
+   {
+       type symplectic;
+   }
+
+   constraints
+   {
+       fixedPoint
+       {
+            sixDoFRigidBodyMotionConstraint   point;
+            centreOfRotation   (0 0 0);
+       }
+        /*yline
+        {
+        sixDoFRigidBodyMotionConstraint   line;
+        direction (0 1 0);
+        }*/
+
+
+        zAxis
+        {
+            sixDoFRigidBodyMotionConstraint orientation;
+            centreOfRotation                (0 0 1);
+        }
+}
+
+
+restraints
+{
+    verticalSpring
+    {
+        sixDoFRigidBodyMotionRestraint linearSpring;
+
+        anchor          (-0 0.0 0.0);
+        refAttachmentPt (-0 0.0 0.0);
+        stiffness       7.507331;
+        damping         0;
+        restLength      0;
+    }
+
+
+}
+
+}
+// ************************************************************************* //

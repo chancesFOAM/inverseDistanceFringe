@@ -1,0 +1,123 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  plus                                  |
+|   \\  /    A nd           | Web:      www.OpenFOAM.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+solvers
+{
+    cellDisplacement
+    {
+        solver          PCG;
+        preconditioner  DIC;
+
+        tolerance       1e-06;
+        relTol          0;
+        maxIter         100;
+    }
+
+    p
+    {
+        solver          GAMG;
+        preconditioner  DIC;
+        tolerance       1e-10;
+        relTol          0.01;
+    }
+
+    pFinal
+    {
+        solver          PBiCGStab;
+        preconditioner  DIC;
+        tolerance       1e-07;
+        relTol          0.1;
+    }
+
+    pcorr
+    {
+        $pFinal;
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance 1e-7;
+        relTol 0.1;
+    }
+
+    pcorrFinal
+    {
+        $pcorr;
+        relTol          0.1;
+        tolerance 1e-7;
+    }
+
+    "(U|k|epsilon)"
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0.1;
+    }
+
+    "(U|k|epsilon)Final"
+    {
+        $U;
+        tolerance       1e-6;
+        relTol          0;
+    }
+
+    Phi
+    {
+        $p;
+        relTol          0;
+    };
+
+}
+
+PIMPLE
+{
+    momentumPredictor   false;
+    correctPhi          true;
+    nOuterCorrectors    5;
+    nCorrectors         1;
+    nNonOrthogonalCorrectors 0;
+    massFluxInterpolation true;
+    ddtCorr             false;
+    turbOnFinalIterOnly false;
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors 0;
+    pRefCell        0;
+    pRefValue       0;
+
+    residualControl
+    {
+        p               1e-5;
+        U               1e-5;
+        nuTilda         1e-5;
+    }
+}
+relaxationFactors
+{
+    fields
+    {
+        p               1.;
+    }
+    equations
+    {
+        "(U|k|omega)"   1.;
+        ".*Final"        1.0;
+    }
+}
+
+
+// ************************************************************************* //
