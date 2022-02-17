@@ -1,0 +1,94 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v1912                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      dynamicMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+
+motionSolverLibs (sixDoFRigidBodyMotion);
+
+motionSolver    sixDoFRigidBodyMotion;
+
+
+displacementLaplacianCoeffs
+{
+    diffusivity     uniform 1;
+}
+
+dynamicFvMesh       dynamicMotionSolverFvMesh;
+
+dynamicOversetFvMeshCoeffs
+{
+//    layerRelax 0.3;
+}
+
+sixDoFRigidBodyMotionCoeffs
+{
+
+    accelerationRelaxation 1.0;
+    accelerationDamping 1.0;
+
+    patches         (cylinder);
+    innerDistance   1.0;
+    outerDistance   1.1;
+
+    mass            0.03575;
+   centreOfMass    (-0.016 0.0 0.0);
+   momentOfInertia (1.144E-08 1.144E-08 1.144E-08);
+
+   g               (0 -9.81 0);
+   rho             rhoInf;
+   rhoInf          14817.1;
+   report          on;
+
+   solver
+   {
+       type symplectic;
+   }
+
+   constraints
+   {
+
+    yPlan
+    {
+       sixDoFRigidBodyMotionConstraint   plane;
+       normal ( 0 1 0); 
+    }    
+
+    yAxis
+    {
+        sixDoFRigidBodyMotionConstraint orientation;
+        centreOfRotation                (0 1 0);
+    }
+}
+
+
+restraints
+{
+    spring
+    {
+        sixDoFRigidBodyMotionRestraint linearSpring;
+
+        anchor          (-0.016 0.0 0.0);
+        refAttachmentPt (-0.016 0.0 0.0);
+        stiffness       94.9;
+        damping         0.00;
+        restLength      0;
+    }
+
+
+
+}
+
+}
+// ************************************************************************* //

@@ -1,0 +1,18 @@
+#!/bin/sh
+cd ${0%/*} || exit 1                        # Run from this directory
+. $WM_PROJECT_DIR/bin/tools/RunFunctions    # Tutorial run functions
+
+# Generate mesh from surface (in constant/triSurface)
+runApplication blockMesh
+
+#runApplication transformPoints -translate '(-10 0.0 0.0)'
+#mv log.transformPoints log.transformPointsTranslate
+
+#runApplication transformPoints -rotate '((0 1 0)(0 0 1))'
+#mv log.transformPoints log.transformPointsrotate
+#runApplication transformPoints -scale '(1 750. 1)'
+#mv log.transformPoints log.transformPointsscale
+#runApplication transformPoints -translate '(0 37.5 0.0)'
+
+runApplication topoSet
+#------------------------------------------------------------------------------
